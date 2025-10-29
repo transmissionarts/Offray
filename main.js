@@ -1,30 +1,83 @@
-const express = require('express');
-const { RiTa } = require('rita'); // Import Rita.js
+const http = require("http");
+const express = require("express");
 const app = express();
-const port = process.env.PORT || 3000; // Use Heroku's port, or 3000 for local testing
 
-// Middleware to parse JSON bodies
-app.use(express.json());
+app.use(express.static("public"));
+// require("dotenv").config();
 
-// Define the API endpoint
-app.post('/process-text', (req, res) => {
-  const { text } = req.body;
+const serverPort = process.env.PORT || 3000;
+const server = http.createServer(app);
+const WebSocket = require("ws");
 
-  if (!text) {
-    return res.status(400).send({ error: 'Text is required in the request body.' });
+let keepAliveId;
+
+const wss =
+  process.env.NODE_ENV === "production"
+    ? new WebSocket.Server({ server })
+    : new WebSocket.Server({ port: 5001 });
+
+server.listen(serverPort);
+console.log(`Server started on port ${serverPort} in stage ${process.env.NODE_ENV}`);
+
+wss.on("connection", function (ws, req) {
+  console.log("Connection Opened");
+  console.log("Client size: ", wss.clients.size);
+
+  if (wss.clients.size === 1) {
+    console.log("first connection. starting keepalive");
+    keepServerAlive();
   }
 
-  // Use Rita.js to analyze the text
-  const analysis = RiTa.analyze(text);
+  ws.on("message", (data) => {
+    let stringifiedData = data.toString();
+    if (stringifiedData === 'pong') {
+      console.log('keepAlive');
+      return;
+    }
+    broadcast(ws, stringifiedData, false);
+  });
 
-  // Return the processed data
-  res.json({
-    originalText: text,
-    analysis: analysis
+  ws.on("close", (data) => {
+    console.log("closing connection");
+
+    if (wss.clients.size === 0) {
+      console.log("last client disconnected, stopping keepAlive interval");
+      clearInterval(keepAliveId);
+    }
   });
 });
 
-// Start the server
-app.listen(port, () => {
-  console.log(`Server listening on port ${port}`);
+// Implement broadcast function because of ws doesn't have it
+const broadcast = (ws, message, includeSelf) => {
+  if (includeSelf) {
+    wss.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
+    });
+  } else {
+    wss.clients.forEach((client) => {
+      if (client !== ws && client.readyState === WebSocket.OPEN) {
+        client.send(message);
+      }
+    });
+  }
+};
+
+/**
+ * Sends a ping message to all connected clients every 50 seconds
+ */
+ const keepServerAlive = () => {
+  keepAliveId = setInterval(() => {
+    wss.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) {
+        client.send('ping');
+      }
+    });
+  }, 50000);
+};
+
+
+app.get('/', (req, res) => {
+    res.send('Hello World!');
 });
